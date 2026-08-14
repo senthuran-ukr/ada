@@ -9,8 +9,11 @@ try:
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.06
     _PYAUTOGUI = True
-except ImportError:
+    _PYAUTOGUI_ERROR = None
+except Exception as exc:
+    pyautogui = None
     _PYAUTOGUI = False
+    _PYAUTOGUI_ERROR = exc
 
 try:
     import pyperclip
@@ -35,7 +38,11 @@ def _get_os() -> str:
 
 def _require_pyautogui():
     if not _PYAUTOGUI:
-        raise RuntimeError("PyAutoGUI not installed. Run: pip install pyautogui")
+        detail = f": {_PYAUTOGUI_ERROR}" if _PYAUTOGUI_ERROR else ""
+        raise RuntimeError(
+            "PyAutoGUI is unavailable. Run ADA from an authorized graphical "
+            f"desktop session{detail}"
+        )
 
 
 def _paste_text(text: str) -> None:

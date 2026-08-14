@@ -20,8 +20,11 @@ try:
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
-except ImportError:
+    _PYAUTOGUI_ERROR = None
+except Exception as exc:
+    pyautogui = None
     _PYAUTOGUI = False
+    _PYAUTOGUI_ERROR = exc
 
 try:
     import pyperclip
@@ -77,7 +80,11 @@ def _safe_screenshot_path(requested: str | None) -> Path:
 
 def _require_pyautogui():
     if not _PYAUTOGUI:
-        raise RuntimeError("PyAutoGUI not installed. Run: pip install pyautogui")
+        detail = f": {_PYAUTOGUI_ERROR}" if _PYAUTOGUI_ERROR else ""
+        raise RuntimeError(
+            "PyAutoGUI is unavailable. Run ADA from an authorized graphical "
+            f"desktop session{detail}"
+        )
 
 _FIRST_NAMES = [
     "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Drew", "Quinn",

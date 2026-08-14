@@ -1,0 +1,5 @@
+config/api_keys.json
+memory/long_term.json
+.vscode/
+__pycache__/
+*.py[cod]
