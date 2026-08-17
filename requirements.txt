@@ -2,6 +2,7 @@ PyQt6
 sounddevice
 google-genai
 google-generativeai
+websockets>=14.0
 pillow
 requests
 beautifulsoup4

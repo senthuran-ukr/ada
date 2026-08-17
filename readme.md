@@ -113,7 +113,45 @@ python main.py
 | **OS** | Windows 10/11, macOS, or Linux |
 | **Python** | 3.11 or 3.12 |
 | **Microphone** | Required for voice interaction |
-| **API Key** | Free Gemini API key (`config/api_keys.json`) |
+| **API Key** | Gemini key, plus an OpenAI API key when the OpenAI connector is enabled |
+
+---
+
+## OpenAI / ChatGPT connector
+
+ADA can use OpenAI Realtime as its main conversational voice model while
+keeping the existing Gemini connector as the default. The OpenAI connector
+shares ADA's system prompt, memory, microphone and speaker streams, screen
+images, dashboard commands, and local function tools.
+
+Install the updated dependencies, then provide the OpenAI key through an
+environment variable. Do not write the key to `config/api_keys.json`.
+
+Linux or macOS:
+
+```bash
+export OPENAI_API_KEY="your-openai-api-key"
+export ADA_AI_PROVIDER="openai"
+python main.py
+```
+
+Windows PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY="your-openai-api-key"
+$env:ADA_AI_PROVIDER="openai"
+python main.py
+```
+
+The default model is `gpt-realtime-2.1` and the default voice is `marin`.
+They can be changed with `OPENAI_REALTIME_MODEL` and
+`OPENAI_REALTIME_VOICE`, or with the non-secret fields shown in
+`config/api_keys.example.json`. Set `ADA_AI_PROVIDER=gemini` (or remove the
+variable) to return to Gemini Live.
+
+Several specialist actions still call Gemini directly, so keep a valid local
+Gemini key if you use code generation, document analysis, search summarisation,
+or desktop-planning features.
 
 ---
 
@@ -149,9 +187,11 @@ ADA L/
 │   ├── memory_manager.py     # Load/save long_term.json — sessions, monitors, identity
 │   └── long_term.json        # Persistent store: identity, preferences, projects, sessions, monitors
 ├── core/
+│   ├── openai_realtime.py    # OpenAI Realtime voice/tool connector
 │   └── prompt.txt            # Assistant personality and tool-routing rules
 └── config/
-    └── api_keys.json         # API key, OS setting, assistant name, user name
+    ├── api_keys.example.json # Safe provider/model configuration template
+    └── api_keys.json         # Local ignored secrets and user settings
 ```
 
 ---

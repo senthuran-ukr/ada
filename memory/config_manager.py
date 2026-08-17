@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -45,6 +46,49 @@ def load_api_keys() -> dict:
 
 def get_gemini_key() -> str | None:
     return load_api_keys().get("gemini_api_key")
+
+
+def get_ai_provider() -> str:
+    """Return the live assistant provider: ``gemini`` or ``openai``."""
+    raw = (
+        os.environ.get("ADA_AI_PROVIDER")
+        or load_api_keys().get("ai_provider")
+        or "gemini"
+    )
+    return "openai" if str(raw).strip().lower() in {"openai", "chatgpt"} else "gemini"
+
+
+def get_openai_key() -> str | None:
+    """Read the OpenAI key from the environment; never persist it to config."""
+    return os.environ.get("OPENAI_API_KEY") or None
+
+
+def get_openai_model() -> str:
+    return (
+        os.environ.get("OPENAI_REALTIME_MODEL")
+        or load_api_keys().get("openai_realtime_model")
+        or "gpt-realtime-2.1"
+    )
+
+
+def get_openai_voice() -> str:
+    return (
+        os.environ.get("OPENAI_REALTIME_VOICE")
+        or load_api_keys().get("openai_realtime_voice")
+        or "marin"
+    )
+
+
+def save_ai_provider(provider: str) -> None:
+    """Persist a provider choice without storing either provider's secret."""
+    ensure_config_dir()
+    data = load_api_keys()
+    data["ai_provider"] = (
+        "openai"
+        if str(provider).strip().lower() in {"openai", "chatgpt"}
+        else "gemini"
+    )
+    CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
 def is_configured() -> bool:
     key = get_gemini_key()

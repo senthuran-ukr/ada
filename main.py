@@ -29,6 +29,7 @@ import sounddevice as sd
 from google import genai
 from google.genai import types
 from ui import JarvisUI
+from core.openai_realtime import OpenAIRealtimeSession
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     save_session_summary, pop_last_session,
@@ -57,7 +58,13 @@ from actions.background_monitor import (
     add_monitor, remove_monitor, list_monitors, check_all as monitor_check_all,
 )
 from actions.web_search        import _news as _fetch_news_sync
-from memory.config_manager     import get_brief_enabled
+from memory.config_manager     import (
+    get_ai_provider,
+    get_brief_enabled,
+    get_openai_key,
+    get_openai_model,
+    get_openai_voice,
+)
 
 
 def get_base_dir():
@@ -555,6 +562,7 @@ class JarvisLive:
     def __init__(self, ui: JarvisUI):
         self.ui             = ui
         self._asst_name     = "ADA"   # updated each session from config
+        self._provider      = "gemini"
         self.session              = None
         self.audio_in_queue       = None
         self.out_queue            = None
@@ -613,7 +621,12 @@ class JarvisLive:
 
     def interrupt(self) -> None:
         """Stop JARVIS mid-speech: drain queued audio and open mic immediately."""
-        self._interrupted = True
+        cancel = getattr(self.session, "cancel_response", None)
+        self._interrupted = (
+            bool(getattr(self.session, "response_active", False))
+            if cancel
+            else True
+        )
         q = self.audio_in_queue
         if q:
             drained = 0
@@ -628,6 +641,11 @@ class JarvisLive:
         self.set_speaking(False)
         if self._turn_done_event:
             self._turn_done_event.clear()
+        if cancel and self._loop:
+            try:
+                asyncio.run_coroutine_threadsafe(cancel(), self._loop)
+            except Exception:
+                pass
         self.ui.write_log("SYS: Interrupted — listening...")
 
     def speak(self, text: str):
@@ -646,7 +664,7 @@ class JarvisLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
-    def _build_config(self) -> types.LiveConnectConfig:
+    def _build_system_instruction(self) -> str:
         from datetime import datetime
 
         # Load customization from config
@@ -687,11 +705,18 @@ class JarvisLive:
             parts.append(mem_str)
         parts.append(sys_prompt)
 
+        return "\n".join(parts)
+
+    def _build_config(
+        self, system_instruction: str | None = None
+    ) -> types.LiveConnectConfig:
+        system_instruction = system_instruction or self._build_system_instruction()
+
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
             input_audio_transcription={},
-            system_instruction="\n".join(parts),
+            system_instruction=system_instruction,
             tools=[{"function_declarations": TOOL_DECLARATIONS}],
             session_resumption=types.SessionResumptionConfig(),
             speech_config=types.SpeechConfig(
@@ -929,6 +954,16 @@ class JarvisLive:
         try:
             while True:
                 async for response in self.session.receive():
+
+                    if getattr(response, "speech_started", False):
+                        # OpenAI server VAD detected a fresh user turn. Clear any
+                        # queued output so stale speech is never played over it.
+                        while True:
+                            try:
+                                self.audio_in_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+                        self.set_speaking(False)
 
                     if response.data:
                         if self._interrupted:
@@ -1414,18 +1449,42 @@ class JarvisLive:
 
         while True:
             try:
-                print("[ADA] Connecting...")
+                self._provider = get_ai_provider()
+                print(f"[ADA] Connecting via {self._provider.upper()}...")
                 self.ui.set_state("THINKING")
-                config = self._build_config()
+                system_instruction = self._build_system_instruction()
 
-                # Fresh client on every reconnect — avoids stale HTTP session state
-                client = genai.Client(
-                    api_key=_get_api_key(),
-                    http_options={"api_version": "v1beta"}
-                )
+                if self._provider == "openai":
+                    api_key = get_openai_key()
+                    if not api_key:
+                        raise RuntimeError(
+                            "OPENAI_API_KEY is required when "
+                            "ADA_AI_PROVIDER=openai."
+                        )
+                    model = get_openai_model()
+                    session_context = OpenAIRealtimeSession(
+                        api_key=api_key,
+                        model=model,
+                        voice=get_openai_voice(),
+                        instructions=system_instruction,
+                        tool_declarations=TOOL_DECLARATIONS,
+                        input_sample_rate=SEND_SAMPLE_RATE,
+                    )
+                    provider_label = f"OpenAI {model}"
+                else:
+                    config = self._build_config(system_instruction)
+                    # Fresh client on every reconnect avoids stale HTTP state.
+                    client = genai.Client(
+                        api_key=_get_api_key(),
+                        http_options={"api_version": "v1beta"}
+                    )
+                    session_context = client.aio.live.connect(
+                        model=LIVE_MODEL, config=config
+                    )
+                    provider_label = "Google Gemini"
 
                 async with (
-                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
+                    session_context as session,
                     asyncio.TaskGroup() as tg,
                 ):
                     self.session          = session
@@ -1441,9 +1500,9 @@ class JarvisLive:
                     self._vision_last_time     = 0.0
                     self._interrupted          = False
 
-                    print("[ADA] Connected.")
+                    print(f"[ADA] Connected via {provider_label}.")
                     self.ui.set_state("LISTENING")
-                    self.ui.write_log("SYS: ADA online.")
+                    self.ui.write_log(f"SYS: ADA online via {provider_label}.")
 
                     if self._dashboard:
                         await self._dashboard.broadcast({"type": "status", "state": "active"})
@@ -1477,8 +1536,28 @@ class JarvisLive:
                 print(f"[ADA] Error ({type(e).__name__}): {e}")
                 traceback.print_exc()
 
-                # Invalid API key — stop hammering the API, prompt re-configuration
-                if "API key not valid" in err_str or "1007" in err_str:
+                # OpenAI secrets come from the environment, not the setup UI.
+                auth_error_handled = False
+                if self._provider == "openai" and any(
+                    marker in err_str.lower()
+                    for marker in (
+                        "openai_api_key",
+                        "invalid_api_key",
+                        "authentication",
+                        "http 401",
+                        "status 401",
+                    )
+                ):
+                    self.ui.write_log(
+                        "ERR: OpenAI authentication failed — set a valid "
+                        "OPENAI_API_KEY environment variable."
+                    )
+                    self.ui.set_state("SLEEPING")
+                    self._conn_backoff = 60
+                    auth_error_handled = True
+
+                # Invalid Gemini key — prompt re-configuration in the UI.
+                elif "API key not valid" in err_str or "1007" in err_str:
                     self.ui.write_log("ERR: API key invalid — please re-enter your key.")
                     self.ui.set_state("SLEEPING")
                     self.ui.prompt_reconfig()
@@ -1488,20 +1567,21 @@ class JarvisLive:
                     _conn_backoff = 3
                     continue
 
-                # Network / timeout errors — log clearly and back off
-                is_net_err = any(k in err_str for k in (
-                    "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
-                    "ConnectionRefusedError", "OSError", "Cannot connect",
-                ))
-                if is_net_err:
-                    _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
-                    self._conn_backoff = _conn_backoff
-                    self.ui.write_log(
-                        f"NET: Bağlantı kurulamadı — {_conn_backoff}s sonra tekrar deneniyor. "
-                        "(VPN gerekiyor olabilir)"
-                    )
-                else:
-                    self._conn_backoff = 3
+                if not auth_error_handled:
+                    # Network / timeout errors — log clearly and back off
+                    is_net_err = any(k in err_str for k in (
+                        "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
+                        "ConnectionRefusedError", "OSError", "Cannot connect",
+                    ))
+                    if is_net_err:
+                        _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
+                        self._conn_backoff = _conn_backoff
+                        self.ui.write_log(
+                            f"NET: Bağlantı kurulamadı — {_conn_backoff}s sonra tekrar deneniyor. "
+                            "(VPN gerekiyor olabilir)"
+                        )
+                    else:
+                        self._conn_backoff = 3
             finally:
                 self.session = None
                 # Only save if there was a real conversation (≥3 turns)

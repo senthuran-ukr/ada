@@ -1,0 +1,7 @@
+{
+  "gemini_api_key": "YOUR_GEMINI_API_KEY",
+  "os_system": "linux",
+  "ai_provider": "gemini",
+  "openai_realtime_model": "gpt-realtime-2.1",
+  "openai_realtime_voice": "marin"
+}
